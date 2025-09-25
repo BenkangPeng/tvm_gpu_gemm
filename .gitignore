@@ -1,1 +1,4 @@
 *.pkl_memoize_py3
+*/progress
+.env
+**/__*__

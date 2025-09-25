@@ -16,18 +16,16 @@ def write_code(code, fname):
 
 def test_gemm():
     # graph
-    nn = 16384
-    n = te.var("n")
-    n = tvm.runtime.convert(nn)
-    m, l = n, n
-    A = te.placeholder((l, n), dtype=_dtype, name="A")
-    B = te.placeholder((l, m), dtype=_dtype, name="B")
-    k = te.reduce_axis((0, l), name="k")
-    C = te.compute((m, n), lambda ii, jj: te.sum(
-        A[k, jj] * B[k, ii], axis=k), name="C")
+    # M, K, N = 16384, 16384, 16384
+    M, K, N = 4096, 4096, 4096
+    A = te.placeholder((M, K), dtype=_dtype, name="A")
+    B = te.placeholder((K, N), dtype=_dtype, name="B")
+    k = te.reduce_axis((0, K), name="k")
+    C = te.compute((M, N), lambda i, j: te.sum(
+        A[i, k] * B[k, j], axis=k), name="C")
 
     # schedule
-    s = te.create_schedule(C.op)
+    s: tvm.te.Schedule = te.create_schedule(C.op)
     write_code(
         str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/0.initial.cu")
 
@@ -35,6 +33,8 @@ def test_gemm():
     # BB = s.cache_read(B, "shared", [C])
     # AL = s.cache_read(AA, "local", [C])
     # BL = s.cache_read(BB, "local", [C])
+
+    # create a cache stage(store C in local memory before writing to global memory)
     CC = s.cache_write(C, "local")
     write_code(
         str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/1.cache.cu")
@@ -57,6 +57,7 @@ def test_gemm():
     write_code(
         str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/3.split_j.cu")
 
+    # launch 128x128 thread blocks, and each threadblock processes (M/128)x(N/128) elements
     s[C].bind(bx, block_x)
     s[C].bind(by, block_y)
     s[C].reorder(bx, by, xi, yi)
@@ -93,18 +94,18 @@ def test_gemm():
     f = tvm.build(s, [A, B, C], device)
     write_code(f.imported_modules[0].get_source(), "tmp.cu")
     # launch the kernel.
-    n, m, l = nn, nn, nn
-    a_np = np.random.uniform(size=(n, l)).astype(A.dtype)
-    b_np = np.random.uniform(size=(m, l)).astype(B.dtype)
+    # n, m, l = nn, nn, nn
+    a_np = np.random.uniform(size=(M, K)).astype(A.dtype)
+    b_np = np.random.uniform(size=(K, N)).astype(B.dtype)
     a = tvm.nd.array(a_np, dev)
     b = tvm.nd.array(b_np, dev)
-    c = tvm.nd.array(np.zeros((n, m), dtype=C.dtype), dev)
+    c = tvm.nd.array(np.zeros((M, N), dtype=C.dtype), dev)
     for i in range(2):
         f(a, b, c)
     tvm.testing.assert_allclose(c.numpy(), np.dot(b_np.T, a_np), rtol=1e1)
 
-    num_flops = 2 * nn * nn * nn
-    num_runs = 10
+    num_flops = 2 * M * K * N
+    num_runs = 2
     timer_f = f.time_evaluator(f.entry_name, dev, number=num_runs)
     t = timer_f(a, b, c).mean
     GFLOPS = num_flops / (t * 1e3) / 1e6

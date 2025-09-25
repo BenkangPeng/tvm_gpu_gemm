@@ -3,6 +3,8 @@
 - [tensor expression efficient fp32 gemm](https://zhuanlan.zhihu.com/p/560729749)
 - [TIR Script efficient fp32 gemm](https://zhuanlan.zhihu.com/p/562360659)
 
+-tvm version-
+0.17.dev0
 -info-
 
 shape : 16384, 16384, 16384

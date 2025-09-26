@@ -2,6 +2,7 @@ import tvm
 from tvm import te
 import numpy as np
 import tvm.testing
+import os
 
 TASK = "gemm"
 USE_MANUAL_CODE = False
@@ -9,6 +10,8 @@ _dtype = "float32"
 
 
 def write_code(code, fname):
+    if not os.path.exists(os.path.dirname(fname)):
+        os.makedirs(os.path.dirname(fname))
     with open(fname, "w") as f:
         f.write(code)
 
@@ -23,7 +26,9 @@ def test_gemm():
     B = te.placeholder((l, m), dtype=_dtype, name="B")
     k = te.reduce_axis((0, l), name="k")
     C = te.compute((m, n), lambda ii, jj: te.sum(
-        A[k, jj] * B[k, ii], axis=k), name="C")
+        A[ii, k] * B[k, jj], axis=k), name="C")
+    
+    # C = te.compute
 
     # schedule
     s = te.create_schedule(C.op)
@@ -47,7 +52,8 @@ def test_gemm():
     print("Device %s" % device)
     f = tvm.build(s, [A, B, C], device)
 
-    write_code(f.imported_modules[0].get_source(), "tmp.cu")
+    dir_name = "log/0.native_gemm_A@B"
+    write_code(f.imported_modules[0].get_source(), f"{dir_name}/0.native_gemm.cu")
     # launch the kernel.
     n, m, l = nn, nn, nn
     a_np = np.random.uniform(size=(n, l)).astype(A.dtype)

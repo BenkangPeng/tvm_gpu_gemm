@@ -3,6 +3,7 @@ import tvm
 from tvm import te
 import numpy as np
 import tvm.testing
+import os
 
 TASK = "gemm"
 USE_MANUAL_CODE = False
@@ -10,6 +11,8 @@ _dtype = "float32"
 
 
 def write_code(code, fname):
+    if not os.path.exists(os.path.dirname(fname)):
+        os.makedirs(os.path.dirname(fname))
     with open(fname, "w") as f:
         f.write(code)
 
@@ -24,10 +27,13 @@ def test_gemm():
     C = te.compute((M, N), lambda i, j: te.sum(
         A[i, k] * B[k, j], axis=k), name="C")
 
+    # C = te.compute((M, N), lambda i, j: te.sum(
+    #     A[k, j] * B[k, i], axis=k), name="C")
+
     # schedule
     s: tvm.te.Schedule = te.create_schedule(C.op)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/0.initial.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/0.initial.py")
 
     # AA = s.cache_read(A, "shared", [C])
     # BB = s.cache_read(B, "shared", [C])
@@ -37,7 +43,7 @@ def test_gemm():
     # create a cache stage(store C in local memory before writing to global memory)
     CC = s.cache_write(C, "local")
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/1.cache.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/1.cache.py")
 
     # grid_size 16384
     # block_size 256
@@ -52,26 +58,26 @@ def test_gemm():
 
     bx, xi = s[C].split(C.op.axis[0], factor=(block_h))
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/2.split_i.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/2.split_i.py")
     by, yi = s[C].split(C.op.axis[1], factor=(block_w))
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/3.split_j.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/3.split_j.py")
 
     # launch 128x128 thread blocks, and each threadblock processes (M/128)x(N/128) elements
     s[C].bind(bx, block_x)
     s[C].bind(by, block_y)
     s[C].reorder(bx, by, xi, yi)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/4.bind_block.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/4.bind_block.py")
 
     s[C].bind(xi, thread_x)
     s[C].bind(yi, thread_y)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/5.bind_thread.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/5.bind_thread.py")
 
     s[CC].compute_at(s[C], yi)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/6.CC_compute_at.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/6.CC_compute_at.py")
     # s[AA].compute_at(s[C], yi)
     # write_code(str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/13.AA_compute_at_ko.cu")
     # s[BB].compute_at(s[C], yi)
@@ -82,7 +88,7 @@ def test_gemm():
     # s[AA].bind(AA.op.axis[0], thread_y)
     # s[BB].bind(BB.op.axis[0], thread_y)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/7.compute_at_done.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/1.blocked_gemm/7.compute_at_done.py")
 
     device = "cuda"
 
@@ -92,7 +98,8 @@ def test_gemm():
         return
     print("Device %s" % device)
     f = tvm.build(s, [A, B, C], device)
-    write_code(f.imported_modules[0].get_source(), "tmp.cu")
+    write_code(f.imported_modules[0].get_source(),
+               "log/1.blocked_gemm/1.blocked_gemm.cu")
     # launch the kernel.
     # n, m, l = nn, nn, nn
     a_np = np.random.uniform(size=(M, K)).astype(A.dtype)
@@ -102,7 +109,7 @@ def test_gemm():
     c = tvm.nd.array(np.zeros((M, N), dtype=C.dtype), dev)
     for i in range(2):
         f(a, b, c)
-    tvm.testing.assert_allclose(c.numpy(), np.dot(b_np.T, a_np), rtol=1e1)
+    tvm.testing.assert_allclose(c.numpy(), a_np @ b_np, rtol=1e-3)
 
     num_flops = 2 * M * K * N
     num_runs = 2

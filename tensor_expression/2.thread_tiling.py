@@ -2,6 +2,7 @@ import tvm
 from tvm import te
 import numpy as np
 import tvm.testing
+import os
 
 TASK = "gemm"
 USE_MANUAL_CODE = False
@@ -9,26 +10,34 @@ _dtype = "float32"
 
 
 def write_code(code, fname):
+    if not os.path.exists(os.path.dirname(fname)):
+        os.makedirs(os.path.dirname(fname))
     with open(fname, "w") as f:
         f.write(code)
 
 
 def test_gemm():
     # graph
-    nn = 16384
-    n = te.var("n")
-    n = tvm.runtime.convert(nn)
-    m, l = n, n
-    A = te.placeholder((l, n), dtype=_dtype, name="A")
-    B = te.placeholder((l, m), dtype=_dtype, name="B")
+    # nn = 16384
+    # n = te.var("n")
+    # n = tvm.runtime.convert(nn)
+    # m, l = n, n
+
+    l = 4096
+    m = 4096
+    n = 4096
+
+    A = te.placeholder((m,l), dtype=_dtype, name="A")
+    B = te.placeholder((n, l), dtype=_dtype, name="B")
     k = te.reduce_axis((0, l), name="k")
+    # C = B^T @ A
     C = te.compute((m, n), lambda ii, jj: te.sum(
-        A[k, jj] * B[k, ii], axis=k), name="C")
+        A[ii, k] * B[jj, k], axis=k), name="C")
 
     # schedule
     s = te.create_schedule(C.op)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/0.initial.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/0.initial.py")
 
     AA = s.cache_read(A, "shared", [C])
     BB = s.cache_read(B, "shared", [C])
@@ -36,7 +45,7 @@ def test_gemm():
     BL = s.cache_read(BB, "local", [C])
     CC = s.cache_write(C, "local")
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/1.cache.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/1.cache.py")
 
     # grid_size 16384
     # block_size 256
@@ -55,16 +64,16 @@ def test_gemm():
 
     bx, xi = s[C].split(C.op.axis[0], nparts=Grid_Size_X)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/2.split_i.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/2.split_i.py")
     by, yi = s[C].split(C.op.axis[1], nparts=Grid_Size_Y)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/3.split_j.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/3.split_j.py")
 
     s[C].bind(bx, block_x)
     s[C].bind(by, block_y)
     s[C].reorder(bx, by, xi, yi)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/4.bind_block.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/4.bind_block.py")
 
     tx, xi = s[C].split(xi, nparts=Block_Size_X)
     ty, yi = s[C].split(yi, nparts=Block_Size_Y)
@@ -73,24 +82,24 @@ def test_gemm():
     s[C].bind(ty, thread_y)
     s[C].reorder(ty, tx, xi, yi)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/5.bind_thread.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/5.bind_thread.py")
 
     s[CC].compute_at(s[C], tx)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/6.CC_compute_at.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/6.CC_compute_at.py")
 
     # thread block tiling
     ko, ki = s[CC].split(k, factor=BK)
     xc, yc = s[CC].op.axis
     s[CC].reorder(ko, ki, xc, yc)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/7.split_reorder_k.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/7.split_reorder_k.py")
     s[AA].compute_at(s[CC], ko)
     s[BB].compute_at(s[CC], ko)
     s[AL].compute_at(s[CC], ki)
     s[BL].compute_at(s[CC], ki)
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/8.compute_at_done.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/8.compute_at_done.py")
 
     aa_tx, aa_xi = s[AA].split(s[AA].op.axis[0], nparts=Block_Size_X)
     aa_ty, aa_yi = s[AA].split(s[AA].op.axis[1], nparts=Block_Size_Y)
@@ -105,7 +114,7 @@ def test_gemm():
     s[BB].bind(bb_ty, thread_y)
 
     write_code(
-        str(tvm.lower(s, [A, B, C], simple_mode=True)), "progress/9.shared_load_bind.cu")
+        str(tvm.lower(s, [A, B, C], simple_mode=True)), "log/2.thread_tiling/9.shared_load_bind.py")
 
     device = "cuda"
 
@@ -115,19 +124,20 @@ def test_gemm():
         return
     print("Device %s" % device)
     f = tvm.build(s, [A, B, C], device)
-    write_code(f.imported_modules[0].get_source(), "tmp.cu")
+    write_code(f.imported_modules[0].get_source(), "log/2.thread_tiling/2.thread_tiling.cu")
     # launch the kernel.
-    n, m, l = nn, nn, nn
-    a_np = np.random.uniform(size=(n, l)).astype(A.dtype)
-    b_np = np.random.uniform(size=(m, l)).astype(B.dtype)
+    # n, m, l = nn, nn, nn
+    a_np = np.random.uniform(size=(m,l)).astype(A.dtype)
+    b_np = np.random.uniform(size=(n,l)).astype(B.dtype)
     a = tvm.nd.array(a_np, dev)
     b = tvm.nd.array(b_np, dev)
-    c = tvm.nd.array(np.zeros((n, m), dtype=C.dtype), dev)
+    c = tvm.nd.array(np.zeros((m, n), dtype=C.dtype), dev)
     for i in range(2):
         f(a, b, c)
-    tvm.testing.assert_allclose(c.numpy(), np.dot(b_np.T, a_np), rtol=1e1)
+    tvm.testing.assert_allclose(c.numpy(), a_np @ b_np.T, rtol=1e-3)
 
-    num_flops = 2 * nn * nn * nn
+    # num_flops = 2 * nn * nn * nn
+    num_flops = 2 * l * m * n
     num_runs = 10
     timer_f = f.time_evaluator(f.entry_name, dev, number=num_runs)
     t = timer_f(a, b, c).mean

@@ -10,8 +10,14 @@ from tvm.script import tir as T
 
 _dtype = "float32"
 
+dir_name = os.path.dirname(os.path.abspath(__file__))
+log_path = os.path.join(dir_name, "progress/2.threadtiling")
+
 
 def write_code(code, fname):
+    fname = os.path.join(log_path, fname)
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
     with open(fname, "w") as f:
         f.write(code)
 
@@ -24,6 +30,8 @@ Block_Size_X = 16
 Block_Size_Y = 16
 
 BK = 16
+
+
 @tvm.script.ir_module
 class MyModule:
     @T.prim_func
@@ -85,6 +93,7 @@ ko, ki = sch.split(k, [None, BK])
 write_code(sch.mod["main"].script(), "4.split.cu")
 
 sch.reorder(ko, ki, yi, xi)
+write_code(sch.mod["main"].script(), "5.reorder.cu")
 
 sch.compute_at(block_local_A, ki)
 sch.compute_at(block_local_B, ki)
@@ -102,7 +111,7 @@ can not run because:
 '''
 
 
-write_code(sch.mod["main"].script(), "4.cache_read_compute_at.cu")
+write_code(sch.mod["main"].script(), "6.cache_read_compute_at.cu")
 
 aa_yi, aa_xi = sch.get_loops(block_shared_A)[-2:]  # loops size is 7
 aa_yi, aa_ty = sch.split(aa_yi, factors=[None, Block_Size_Y])
@@ -120,6 +129,7 @@ sch.bind(bb_ty, "threadIdx.y")
 sch.bind(bb_tx, "threadIdx.x")
 
 sch.decompose_reduction(block_b, ko)
+write_code(sch.mod["main"].script(), "7.decompose_reduction.cu")
 
 
 ctx = tvm.cuda(0)

@@ -143,7 +143,7 @@ cuda_c = tvm.nd.array(np.zeros((M, N)).astype(_dtype), ctx)
 cuda_mod(cuda_a, cuda_b, cuda_c)
 
 num_flops = 2 * M * K * N
-num_runs = 1
+num_runs = 10
 timer_cuda_mod = cuda_mod.time_evaluator(
     cuda_mod.entry_name, ctx, number=num_runs)
 

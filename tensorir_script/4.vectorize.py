@@ -1,4 +1,3 @@
-from asyncore import write
 import tvm
 from tvm import te
 import os
@@ -7,26 +6,12 @@ from tvm.contrib import spirv
 import numpy as np
 import tvm.testing
 from tvm.script import tir as T
+from utilis import dump
 
 _dtype = "float32"
 
 
-log_path = "progress/tensorir_script/4.vectorize"
-count = 0
-
-
-def write_code(code, path, fname):
-    global count
-    # if path not exist, create it
-    fname = str(count) + "." + fname
-    count += 1
-    if not os.path.exists(path):
-        os.makedirs(path)
-    # join path and fname
-    fname = os.path.join(path, fname)
-    with open(fname, "w") as f:
-        f.write(code)
-
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "progress/4.vectorize")
 
 M = N = K = 16384
 
@@ -45,6 +30,7 @@ class MyModule:
     @T.prim_func
     def main(a: T.handle, b: T.handle, c: T.handle):
         T.func_attr({"global_symbol": "main", "tir.noalias": True})
+        # transpose A
         AT = T.match_buffer(a, [K, M])
         # A = T.match_buffer(a, [M, K])
         B = T.match_buffer(b, [K, N])
@@ -76,13 +62,13 @@ block_shared_B = sch.cache_read(block_b, 1, "shared")
 block_local_B = sch.cache_read(block_b, 1, "local")
 block_cl = sch.cache_write(block_b, 0, "local")
 
-write_code(sch.mod["main"].script(), log_path, "0.origin.py")
+dump(sch.mod["main"].script(), log_path, "0.origin.py")
 
 (i, j, k) = sch.get_loops(block_b)
 bx, xi = sch.split(i, factors=[Grid_Size_X, None])
 by, yi = sch.split(j, factors=[Grid_Size_Y, None])
 sch.reorder(bx, by, xi, yi)
-write_code(sch.mod["main"].script(), log_path, "1.reorder.py")
+dump(sch.mod["main"].script(), log_path, "1.reorder.py")
 sch.bind(by, "blockIdx.y")
 sch.bind(bx, "blockIdx.x")
 
@@ -95,14 +81,14 @@ sch.bind(ty, "threadIdx.y")
 sch.bind(tx, "threadIdx.x")
 sch.bind(tyz, "vthread.y")
 sch.bind(txz, "vthread.x")
-write_code(sch.mod["main"].script(), log_path, "2.thread_bind.py")
+dump(sch.mod["main"].script(), log_path, "2.thread_bind.py")
 
 
 sch.reverse_compute_at(block_cl, tx, preserve_unit_loops=True)
-write_code(sch.mod["main"].script(), log_path, "3.cache_write_compute_at.py")
+dump(sch.mod["main"].script(), log_path, "3.cache_write_compute_at.py")
 
 ko, ki = sch.split(k, [None, BK])
-write_code(sch.mod["main"].script(), log_path, "4.split.py")
+dump(sch.mod["main"].script(), log_path, "4.split.py")
 
 sch.reorder(ko, ki, yi, xi)
 
@@ -122,7 +108,7 @@ can not run because:
 '''
 
 
-write_code(sch.mod["main"].script(), log_path, "4.cache_read_compute_at.py")
+dump(sch.mod["main"].script(), log_path, "5.cache_read_compute_at.py")
 
 aa_yi, aa_xi = sch.get_loops(block_shared_A)[-2:]  # loops size is 7
 aa_yi, aa_ty = sch.split(aa_yi, factors=[None, Block_Size_Y])
@@ -148,11 +134,12 @@ sch.vectorize(bb_vi)
 
 sch.vectorize(sch.get_loops(block_local_A)[-1])
 sch.vectorize(sch.get_loops(block_local_B)[-1])
+dump(sch.mod["main"].script(), log_path, "6.vectorize.py")
 
 ctx = tvm.cuda(0)
 cuda_mod = tvm.build(sch.mod, target="cuda")
 
-write_code(cuda_mod.imported_modules[0].get_source(), log_path, "tmp.py")
+dump(cuda_mod.imported_modules[0].get_source(), log_path, "tmp.cu")
 
 cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(_dtype), ctx)
 cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(_dtype), ctx)

@@ -1,4 +1,3 @@
-from asyncore import write
 import tvm
 from tvm import te
 import os
@@ -7,13 +6,12 @@ from tvm.contrib import spirv
 import numpy as np
 import tvm.testing
 from tvm.script import tir as T
+from utilis import dump
 
 _dtype = "float32"
 
-
-def write_code(code, fname):
-    with open(fname, "w") as f:
-        f.write(code)
+dir_name = os.path.dirname(os.path.abspath(__file__))
+log_path = os.path.join(dir_name, "progress/3.wrap_tiling")
 
 
 M = N = K = 16384
@@ -33,25 +31,26 @@ class MyModule:
     @T.prim_func
     def main(a: T.handle, b: T.handle, c: T.handle):
         T.func_attr({"global_symbol": "main", "tir.noalias": True})
-        AT = T.match_buffer(a, [K, M])
-        # A = T.match_buffer(a, [M, K])
+        A = T.match_buffer(a, [M, K])
         B = T.match_buffer(b, [K, N])
         C = T.match_buffer(c, [M, N])
+        # AT = T.decl_buffer([K, M], dtype="float32",
+        #                    data=A.data, strides=[1, M])
 
-        for i, j, k in T.grid(M, K, N):
+        for i, j, k in T.grid(M, N, K):
             with T.block("B"):
                 vi, vj, vk = T.axis.remap("SSR", [i, j, k])
                 with T.init():
                     C[vi, vj] = 0.0
-                # C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
-                C[vi, vj] = C[vi, vj] + AT[vk, vi] * B[vk, vj]
+                C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
+                # C[vi, vj] = C[vi, vj] + AT[vk, vi] * B[vk, vj]
 
 
 ir_module = MyModule
 sch = tvm.tir.Schedule(ir_module)
 
-print(type(ir_module))
-print(ir_module.script())
+# print(type(ir_module))
+# print(ir_module.script())
 
 
 '''
@@ -64,13 +63,13 @@ block_shared_B = sch.cache_read(block_b, 1, "shared")
 block_local_B = sch.cache_read(block_b, 1, "local")
 block_cl = sch.cache_write(block_b, 0, "local")
 
-write_code(sch.mod["main"].script(), "0.origin.cu")
+dump(sch.mod["main"].script(), log_path, "0.origin.cu")
 
 (i, j, k) = sch.get_loops(block_b)
 by, yi = sch.split(i, factors=[Grid_Size_Y, None])
 bx, xi = sch.split(j, factors=[Grid_Size_X, None])
 sch.reorder(by, bx, xi, yi)
-write_code(sch.mod["main"].script(), "1.reorder.cu")
+dump(sch.mod["main"].script(), log_path, "1.reorder.cu")
 sch.bind(by, "blockIdx.y")
 sch.bind(bx, "blockIdx.x")
 
@@ -83,14 +82,14 @@ sch.bind(ty, "threadIdx.y")
 sch.bind(tx, "threadIdx.x")
 sch.bind(tyz, "vthread.y")
 sch.bind(txz, "vthread.x")
-write_code(sch.mod["main"].script(), "2.thread_bind.cu")
+dump(sch.mod["main"].script(), log_path, "2.thread_bind.cu")
 
 
 sch.reverse_compute_at(block_cl, tx, preserve_unit_loops=True)
-write_code(sch.mod["main"].script(), "3.cache_write_compute_at.cu")
+dump(sch.mod["main"].script(), log_path, "3.cache_write_compute_at.cu")
 
 ko, ki = sch.split(k, [None, BK])
-write_code(sch.mod["main"].script(), "4.split.cu")
+dump(sch.mod["main"].script(), log_path, "4.split.cu")
 
 sch.reorder(ko, ki, yi, xi)
 
@@ -110,7 +109,7 @@ can not run because:
 '''
 
 
-write_code(sch.mod["main"].script(), "4.cache_read_compute_at.cu")
+dump(sch.mod["main"].script(), log_path, "4.cache_read_compute_at.cu")
 
 aa_yi, aa_xi = sch.get_loops(block_shared_A)[-2:]  # loops size is 7
 aa_yi, aa_ty = sch.split(aa_yi, factors=[None, Block_Size_Y])
@@ -132,7 +131,7 @@ sch.decompose_reduction(block_b, ko)
 ctx = tvm.cuda(0)
 cuda_mod = tvm.build(sch.mod, target="cuda")
 
-write_code(cuda_mod.imported_modules[0].get_source(), "tmp.cu")
+dump(cuda_mod.imported_modules[0].get_source(), log_path, "tmp.cu")
 
 cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(_dtype), ctx)
 cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(_dtype), ctx)
@@ -149,3 +148,6 @@ t = timer_cuda_mod(cuda_a, cuda_b, cuda_c).mean
 GFLOPS = num_flops / (t * 1e3) / 1e6
 print("average time cost of %d runs = %g ms, %g GFLOPS." %
       (num_runs, t * 1e3, GFLOPS))
+
+np.testing.assert_allclose(
+    cuda_c.numpy(), cuda_a.numpy() @ cuda_b.numpy(), rtol=1e-3, atol=1e-5)

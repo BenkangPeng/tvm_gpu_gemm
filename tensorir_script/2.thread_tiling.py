@@ -1,4 +1,3 @@
-from asyncore import write
 import tvm
 from tvm import te
 import os
@@ -141,6 +140,7 @@ cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(_dtype), ctx)
 cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(_dtype), ctx)
 cuda_c = tvm.nd.array(np.zeros((M, N)).astype(_dtype), ctx)
 cuda_mod(cuda_a, cuda_b, cuda_c)
+np.testing.assert_allclose(cuda_c.numpy(), cuda_a.numpy() @ cuda_b.numpy(), rtol=1e-3, atol=1e-5)
 
 num_flops = 2 * M * K * N
 num_runs = 10

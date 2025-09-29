@@ -1,4 +1,3 @@
-from asyncore import write
 import tvm
 from tvm import te
 import os
@@ -7,14 +6,11 @@ from tvm.contrib import spirv
 import numpy as np
 import tvm.testing
 from tvm.script import tir as T
+from utilis import dump
 
 _dtype = "float32"
-
-
-def write_code(code, fname):
-    with open(fname, "w") as f:
-        f.write(code)
-
+log_path = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), "progress/5.unroll")
 
 M = N = K = 16384
 
@@ -64,13 +60,13 @@ block_shared_B = sch.cache_read(block_b, 1, "shared")
 block_local_B = sch.cache_read(block_b, 1, "local")
 block_cl = sch.cache_write(block_b, 0, "local")
 
-write_code(sch.mod["main"].script(), "0.origin.cu")
+dump(sch.mod["main"].script(), log_path, "0.origin.py")
 
 (i, j, k) = sch.get_loops(block_b)
 bx, xi = sch.split(i, factors=[Grid_Size_X, None])
 by, yi = sch.split(j, factors=[Grid_Size_Y, None])
 sch.reorder(bx, by, xi, yi)
-write_code(sch.mod["main"].script(), "1.reorder.cu")
+dump(sch.mod["main"].script(), log_path, "1.reorder.py")
 sch.bind(by, "blockIdx.y")
 sch.bind(bx, "blockIdx.x")
 
@@ -83,14 +79,14 @@ sch.bind(ty, "threadIdx.y")
 sch.bind(tx, "threadIdx.x")
 sch.bind(tyz, "vthread.y")
 sch.bind(txz, "vthread.x")
-write_code(sch.mod["main"].script(), "2.thread_bind.cu")
+dump(sch.mod["main"].script(), log_path, "2.thread_bind.py")
 
 
 sch.reverse_compute_at(block_cl, tx, preserve_unit_loops=True)
-write_code(sch.mod["main"].script(), "3.cache_write_compute_at.cu")
+dump(sch.mod["main"].script(), log_path, "3.cache_write_compute_at.py")
 
 ko, ki = sch.split(k, [None, BK])
-write_code(sch.mod["main"].script(), "4.split.cu")
+dump(sch.mod["main"].script(), log_path, "4.split.py")
 
 sch.reorder(ko, ki, yi, xi)
 
@@ -110,13 +106,13 @@ can not run because:
 '''
 
 
-write_code(sch.mod["main"].script(), "4.cache_read_compute_at.cu")
+dump(sch.mod["main"].script(), log_path, "5.cache_read_compute_at.py")
 
 aa_yi, aa_xi = sch.get_loops(block_shared_A)[-2:]  # loops size is 7
 aa_yi, aa_ty = sch.split(aa_yi, factors=[None, Block_Size_Y])
 aa_xi, aa_tx = sch.split(aa_xi, factors=[None, Block_Size_X * 4])
 aa_tx, aa_vi = sch.split(aa_tx, factors=[Block_Size_X, None])
-sch.reorder(aa_ty, aa_tx, aa_yi, aa_xi)
+sch.reorder(aa_ty, aa_tx, aa_yi, aa_xi, aa_vi)
 sch.bind(aa_ty, "threadIdx.y")
 sch.bind(aa_tx, "threadIdx.x")
 
@@ -125,7 +121,7 @@ bb_yi, bb_xi = sch.get_loops(block_shared_B)[-2:]
 bb_yi, bb_ty = sch.split(bb_yi, factors=[None, Block_Size_Y])
 bb_xi, bb_tx = sch.split(bb_xi, factors=[None, Block_Size_X * 4])
 bb_tx, bb_vi = sch.split(bb_tx, factors=[Block_Size_X, None])
-sch.reorder(bb_ty, bb_tx, bb_yi, bb_xi)
+sch.reorder(bb_ty, bb_tx, bb_yi, bb_xi, bb_vi)
 sch.bind(bb_ty, "threadIdx.y")
 sch.bind(bb_tx, "threadIdx.x")
 
@@ -137,13 +133,15 @@ sch.vectorize(bb_vi)
 sch.vectorize(sch.get_loops(block_local_A)[-1])
 sch.vectorize(sch.get_loops(block_local_B)[-1])
 
+ko, ki = sch.split(ko, factors=[16,None])
 sch.unroll(ko)
+dump(sch.mod["main"].script(), log_path, "6.vectorize_unroll.py")
 
 
 ctx = tvm.cuda(0)
 cuda_mod = tvm.build(sch.mod, target="cuda")
 
-write_code(cuda_mod.imported_modules[0].get_source(), "tmp.cu")
+dump(cuda_mod.imported_modules[0].get_source(), log_path, "tmp.cu")
 
 cuda_a = tvm.nd.array(np.arange(M * K).reshape((M, K)).astype(_dtype), ctx)
 cuda_b = tvm.nd.array(np.arange(K * N).reshape((K, N)).astype(_dtype), ctx)

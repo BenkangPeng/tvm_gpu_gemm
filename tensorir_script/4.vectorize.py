@@ -11,7 +11,8 @@ from utilis import dump
 _dtype = "float32"
 
 
-log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "progress/4.vectorize")
+log_path = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), "progress/4.vectorize")
 
 M = N = K = 16384
 
@@ -30,9 +31,7 @@ class MyModule:
     @T.prim_func
     def main(a: T.handle, b: T.handle, c: T.handle):
         T.func_attr({"global_symbol": "main", "tir.noalias": True})
-        # transpose A
-        AT = T.match_buffer(a, [K, M])
-        # A = T.match_buffer(a, [M, K])
+        A = T.match_buffer(a, [M, K])
         B = T.match_buffer(b, [K, N])
         C = T.match_buffer(c, [M, N])
 
@@ -41,15 +40,14 @@ class MyModule:
                 vi, vj, vk = T.axis.remap("SSR", [i, j, k])
                 with T.init():
                     C[vi, vj] = 0.0
-                # C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
-                C[vi, vj] = C[vi, vj] + AT[vk, vi] * B[vk, vj]
+                C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
 
 
 ir_module = MyModule
 sch = tvm.tir.Schedule(ir_module)
 
-print(type(ir_module))
-print(ir_module.script())
+# print(type(ir_module))
+# print(ir_module.script())
 
 
 '''
@@ -65,9 +63,9 @@ block_cl = sch.cache_write(block_b, 0, "local")
 dump(sch.mod["main"].script(), log_path, "0.origin.py")
 
 (i, j, k) = sch.get_loops(block_b)
-bx, xi = sch.split(i, factors=[Grid_Size_X, None])
-by, yi = sch.split(j, factors=[Grid_Size_Y, None])
-sch.reorder(bx, by, xi, yi)
+by, yi = sch.split(i, factors=[Grid_Size_Y, None])
+bx, xi = sch.split(j, factors=[Grid_Size_X, None])
+sch.reorder(by, bx, yi, xi)
 dump(sch.mod["main"].script(), log_path, "1.reorder.py")
 sch.bind(by, "blockIdx.y")
 sch.bind(bx, "blockIdx.x")
@@ -76,7 +74,7 @@ tyz, yi = sch.split(yi, factors=[V_Thread_Y, None])
 ty, yi = sch.split(yi, [Block_Size_Y, None])
 txz, xi = sch.split(xi, factors=[V_Thread_X, None])
 tx, xi = sch.split(xi, [Block_Size_X, None])
-sch.reorder(tyz, txz, ty, tx, xi, yi)
+sch.reorder(tyz, txz, ty, tx, yi, xi)
 sch.bind(ty, "threadIdx.y")
 sch.bind(tx, "threadIdx.x")
 sch.bind(tyz, "vthread.y")
@@ -127,7 +125,7 @@ sch.reorder(bb_ty, bb_tx, bb_yi, bb_xi, bb_vi)
 sch.bind(bb_ty, "threadIdx.y")
 sch.bind(bb_tx, "threadIdx.x")
 
-sch.decompose_reduction(block_b, ko)
+sch.decompose_reduction(block_b, tx)
 
 sch.vectorize(aa_vi)
 sch.vectorize(bb_vi)
@@ -153,6 +151,10 @@ timer_cuda_mod = cuda_mod.time_evaluator(
 
 t = timer_cuda_mod(cuda_a, cuda_b, cuda_c).mean
 
+# TODO slower than 3.wrap_tiling.py
 GFLOPS = num_flops / (t * 1e3) / 1e6
 print("average time cost of %d runs = %g ms, %g GFLOPS." %
       (num_runs, t * 1e3, GFLOPS))
+np.testing.assert_allclose(
+    cuda_c.numpy(), cuda_a.numpy() @ cuda_b.numpy(), rtol=1e-3, atol=1e-5)
+print("✅✅✅CUDA result is correct")
